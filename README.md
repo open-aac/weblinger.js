@@ -10,9 +10,18 @@ process-intensive, so don't expect awesomoe battery
 life when using these libraries.
 
 ## Documentation
-```
+```js
 weblinger.start({
-  ...opts
+  source: 'head', // head, gaze, cursor
+  calibration: 'default',
+  mode: 'pointer', // pointer, joystick
+  cursor: 'red_circle', // red_circle, dot, image_url
+  selection_type: 'linger', // linger, expression, [keycodes], none
+  selection_action: 'click', // click, callback function
+  linger_duration: 1000,
+  linger_type: 'auto', // auto, maintain, rest
+  target: 'tabbable', // tabbable, [elements], callback function
+  target_highlight: 'overlay' // overlay, .css_classs
 });
 weblinger.stop();
 ```
@@ -23,13 +32,22 @@ getUserMedia for an alternative camera (especially on
 mobile) you will first need to hard stop weblinger
 tracking, otherwise you may have unexpected failures.
 
-*option* - does some things
+*event_callback* - A callback method to provide 
+updates on weblinger events. Most of these events can
+be intercepted via the DOM if you prefer that approach,
+but this data is a little more fine-grained. The first
+argument will have a `type`, check out demo.html for
+examples of use (including getting the video or canvas
+element for rendering in the UI)
+
+*tilt_sensitivity* - Used for head tracking in joystick
+mode. 1.0 is default 0.5 is less-sensitive (more movement
+required), 2.0 is
+extra-sensitive (less movement required)
 
 *option* - does some things
 
-*option* - does some things
-
-*return value*  - returns a Promise
+*return value*  - returns a Promise when fully started
 
 ### weblinger.stop
 Stops the tracking. Note that trackers are typically not 
@@ -37,8 +55,9 @@ torn down because of intiailization overhead, and are
 instead paused.
 
 *teardown* - set to true to completely tear down all trackers.
+Otherwise it will just pause.
 
-*return value*  - returns a Promise
+*return value*  - returns a Promise when fully stoppeed/paused
 
 ### Gotchas
 Trackers leverage getUserMedia to track and analyze the
@@ -54,9 +73,9 @@ MIT
 
 NOTE: This repo includes sub-libraries with their own 
 licenses, so you must decide which you will include. They
-are included here for reference purposes and because the 
-way they are used in this repo should be acceptable,
-*but it may not be for your project*. Use the libraries
+are included here for reference purposes and because we had
+to make minor tweaks to get them working together,
+*but their licensing may mean they are not appropriate for your project*. Use the libraries
 at your own risk.
 
 - [JeelizWeboji](https://github.com/jeeliz/jeelizWeboji) has an Apache 2.0 license
