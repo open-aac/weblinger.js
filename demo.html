@@ -98,7 +98,6 @@
     <div id='status' style='font-weight: bold; padding: 10px; text-align: center; position: fixed; top: 0; width: 400px; margin: 0 calc(50vw - 220px); background: #eee; border-bottom: 1px solid #888; opacity: 0; transition: opacity 0.5s; display: none; box-shadow: 0 5px 10px #000;'>
       You did it!
     </div>
-    <canvas id='face_canvas' width='640' height='480' style='width: 640px; height: 480px; border: 1px solid #000; position: absolute; left: -1000px;'></canvas>
     <button id='button' style='width: 40%; max-width: 300px; height: 200px;'>Button Target</button>
     <img src="https://www.openaac.org/openaac.svg" id='img' style='vertical-align: top; border: 1px solid #888; width: 40%; max-width: 300px; height: 200px;' tabindex=2/>
     <div style='margin-top: 100vh;'>
@@ -170,7 +169,7 @@
               var animating = false;
               if(e.type == 'linger') {
                 if(e.tilt) {
-                  
+
                 }
                 var pct_x = (e.x / window.innerWidth);
                 var pct_y = (e.y / window.innerHeight);

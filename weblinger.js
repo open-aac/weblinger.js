@@ -21,6 +21,7 @@ var weblinger = {};
     mode: 'pointer',
     cursor: 'red_circle',
     tilt_sensitivity: 1.0,
+    joystick_speed: 1.0,
     selection_type: 'linger',
     selection_action: 'click',
     linger_duration: 1000,
@@ -89,6 +90,9 @@ var weblinger = {};
       var load_head = false;
       if(weblinger._config.selection_type == 'expression') {
         load_head = true;
+      }
+      if(weblinger._config.stream) {
+        weblinger.set_stream(weblinger._config.stream);
       }
       if(weblinger._config.source == 'gaze') {
         weblinger.state.tracking = 'gaze';
@@ -444,14 +448,14 @@ var weblinger = {};
 
     var event_settings = {
       source: 'weblinger',
-      trigger: 'mousemove-or-whatever',
+      trigger: source,
       clientX: clientX,
       clientY: clientY,
       extras: extras
     };
     if(!weblinger.state.calibrating && weblinger._state.active) {
       for(var id in listeners) {
-        listeners[id]({type: 'linger', x: clientX, y: clientY, target: target, extras: extras});
+        listeners[id]({type: 'linger', trigger: source, x: clientX, y: clientY, target: target, extras: extras});
       }
       if(window.CustomEvent) {
         var event = new CustomEvent('linger', event_settings);
@@ -552,13 +556,13 @@ var weblinger = {};
       }
       var event_settings = Object.assign({
         source: 'weblinger',
-        trigger: 'mousemove-or-whatever',
+        trigger: type,
         clientX: clientX,
         clientY: clientY
       }, settings || {});
       if(!weblinger.state.calibrating && weblinger._state.active) {
         for(var id in listeners) {
-          listeners[id]({type: 'select', x: clientX, y: clientY, target: target});
+          listeners[id]({type: 'select', trigger: type, x: clientX, y: clientY, target: target});
         }
         if(window.CustomEvent) {
           var event = new CustomEvent(type, event_settings);
@@ -577,6 +581,71 @@ var weblinger = {};
   // instanceof Function
   weblinger.found_target = function(dom_elem) {
 
+  };
+  weblinger.set_stream = function(stream) {
+    return new Promise(function(resolve, reject) {
+      weblinger._assert_video.content = weblinger._assert_video.content || {};
+      if(weblinger._assert_video.content.stream) {
+        if(weblinger._assert_video.content.stream != stream) {
+          reject({error: "stream already set"});
+        } else {
+          resolve();
+        }
+      }
+
+      weblinger._assert_video.content.stream = stream;
+      var video = document.createElement('video');
+      video.srcObject = stream;
+      video.style.width = '300px';
+      video.setAttribute('playsinline', true);
+      video.style.position = 'absolute';
+      video.style.left = '-1000px';
+      document.body.appendChild(video);
+      weblinger._assert_video.content.video = video;
+      var canvas = weblinger._assert_video.canvas;
+      if(!canvas) {
+        canvas = document.createElement('canvas');
+        canvas.style.width = '300px';
+        canvas.style.height = '225px';
+        canvas.style.position = 'absolute';
+        canvas.style.display = 'none';
+        canvas.style.top = 0;
+        canvas.style.right = 0;  
+        document.body.appendChild(canvas);   
+        weblinger._assert_video.canvas = canvas;
+      }
+      weblinger._assert_video.content.canvas = canvas;
+      var context = canvas.getContext('2d');
+      // give canvas same dimensions as video element
+      var check_video = function() {
+        if(weblinger._assert_video.content.video == video) {
+          if(video.paused || video.ended) {
+            setTimeout(check_video, 500);
+          } else {
+            context.drawImage(video, 0, 0, canvas.width, canvas.height);
+            window.requestAnimationFrame(check_video);
+          }  
+        }
+      };
+      video.onloadedmetadata = function(e) {
+        if(weblinger._assert_video.content.video == video) {
+          canvas.width = video.videoWidth;
+          canvas.height = video.videoHeight;
+          video.play();
+          window.requestAnimationFrame(check_video);
+          resolve(canvas);
+        } else {
+          reject({error: "video has been replaced"});
+        }
+      };     
+      video.addEventListener('timeupdate', function() {
+        if(weblinger._assert_video.content.video == video) {
+          canvas.width = video.videoWidth;
+          canvas.height = video.videoHeight;
+          video.play();
+        }
+      });
+    });
   };
   weblinger._assert_video = function() {
     weblinger._assert_video.content = weblinger._assert_video.content || {};
@@ -600,51 +669,14 @@ var weblinger = {};
       if(weblinger._assert_video.content.canvas) {
         return resolve(weblinger._assert_video.content.canvas);
       }
+      weblinger._assert_video.content.stream = null;
+      
       var opts = { video: { width: { min: 320, ideal: 640, max: 1920 }, height: { min: 240, ideal: 480, max: 1080 }, facingMode: "user" } };
       navigator.mediaDevices.getUserMedia(opts).then(function(stream) {
-        weblinger._assert_video.content.stream = stream;
-        var video = document.createElement('video');
-        video.srcObject = stream;
-        video.style.width = '300px';
-        video.setAttribute('playsinline', true);
-        video.style.position = 'absolute';
-        video.style.left = '-1000px';
-        document.body.appendChild(video);
-        weblinger._assert_video.content.video = video;
-        var canvas = weblinger._assert_video.canvas;
-        if(!canvas) {
-          canvas = document.createElement('canvas');
-          canvas.style.width = '300px';
-          canvas.style.height = '225px';
-          canvas.style.position = 'absolute';
-          canvas.style.display = 'none';
-          canvas.style.top = 0;
-          canvas.style.right = 0;  
-          document.body.appendChild(canvas);   
-          weblinger._assert_video.canvas = canvas;
-        }
-        weblinger._assert_video.content.canvas = canvas;
-        var context = canvas.getContext('2d');
-        // give canvas same dimensions as video element
-        var check_video = function() {
-          if(video.paused || video.ended) {
-            setTimeout(check_video, 500);
-          } else {
-            context.drawImage(video, 0, 0, canvas.width, canvas.height);
-            window.requestAnimationFrame(check_video);
-          }
-        };
-        video.onloadedmetadata = function(e) {
-          canvas.width = video.videoWidth;
-          canvas.height = video.videoHeight;
-          video.play();
-          window.requestAnimationFrame(check_video);
-          resolve(canvas);
-        };     
-        video.addEventListener('timeupdate', function() {
-          canvas.width = video.videoWidth;
-          canvas.height = video.videoHeight;
-          video.play();
+        weblinger.set_stream(stream).then(function(res) {
+          resolve(res);
+        }, function(err) {
+          reject(err);
         });
       }, function(err) {
         reject(err);
@@ -1040,25 +1072,30 @@ var weblinger = {};
     setTimeout(check_for_gazer_in_dom, 100);
   };
 
-  var l4 = 0.4, l3 = 0.3, l2 = 0.2, l1 = 0.15;
+  var l9 = 0.45, l8 = 0.4, l7 = 0.35, l6 = 0.3, l5 = 0.25, l4 = 0.2, l3 = 0.15, l2 = 0.10, l1 = 0.05;
   var tilt_scale = function(tilt, factor) {
     var scale = 0;
-    if(tilt > l4/factor) {
-      scale = -5;
+    if(tilt > l8/factor) {
+      scale = -5; 
+    } else if(tilt > l6/factor) {
+      scale = -3 - (tilt - (l6/factor))/(l8-l6); 
+    } else if(tilt > l4/factor) {
+      scale = -2 - (tilt - (l4/factor))/(l6-l4);
     } else if(tilt > l3/factor) {
-      scale = -3; 
-    } else if(tilt > l2/factor) {
-      scale = -2;
+      scale = -1 - (tilt - (l3/factor))/(l4-l3); 
     } else if(tilt > l1/factor) {
-      scale = -1;
-    } else if(tilt < -1*l4/factor) {
+      scale = tilt / (-1*l3/factor);
+      // scale = -0.2; 
+    } else if(tilt < -1*l8/factor) {
       scale = 5;
+    } else if(tilt < -1*l6/factor) {
+      scale = 3 + (tilt + (l6/factor))/(l6-l8);
+    } else if(tilt < -1*l4/factor) {
+      scale = 2 + (tilt + (l4/factor))/(l4-l6);
     } else if(tilt < -1*l3/factor) {
-      scale = 3;
-    } else if(tilt < -1*l2/factor) {
-      scale = 2;
+      scale = 1 + (tilt + (l3/factor))/(l3-l4);
     } else if(tilt < -1*l1/factor) {
-      scale = 1;
+      scale = tilt / (-1*l3/factor);
     }
     return scale;
   }
@@ -1071,7 +1108,7 @@ var weblinger = {};
       var bank = angles[0];
       var attitude = angles[1];
       // negative bank == tilt up, negative == tilt right
-      var tilt_factor = 1.0;
+      var tilt_factor = weblinger._config.tilt_sensitivity;
       weblinger._last_tilt = {bank: bank, attitude: attitude};
       weblinger.faceapi.position = weblinger.faceapi.get_positionScale();
       weblinger.faceapi.expressions = weblinger.faceapi.get_morphTargetInfluencesStabilized();
@@ -1082,7 +1119,7 @@ var weblinger = {};
       // TODO: once projected, rotate based on angles[2]
 
       // These measurements assume a top-centered camera
-      var scale_factor = (weblinger._config.tilt_sensitivity / 2); // 1.0 - extra-sensitive, 0.5 - average, 0.25 - less-sensitive
+      var scale_factor = weblinger._config.joystick_speed / 2;
       var x = (window.screen.height / 2) + (opp_x * scale_factor);
       var y = opp_y * scale_factor * 2.0;
 
@@ -1227,10 +1264,10 @@ var weblinger = {};
         }
       });
       if(last_far && bads > 3 && stable_tilt_history.length > 5) {
-        console.log("DROP STABLE", avg_dist, stable_tilt_history.length, last_far, tilt_history.length);
+        // console.log("DROP STABLE", avg_dist, stable_tilt_history.length, last_far, tilt_history.length);
         stable_tilt_history = stable_tilt_history.slice(Math.ceil(-1 * history_size * 0.3)).concat(mid_tilt_history.slice(Math.ceil(-1 * history_size * 0.7))); //.concat([]); //slice(Math.ceil(-1 * tilt_history * 2 / 3));
       } else if(mid_bads > 3 || bads > 2) {
-        console.log("ADJUST STABLE");
+        // console.log("ADJUST STABLE");
         stable_tilt_history = stable_tilt_history.concat(mid_tilt_history).slice(-1 * history_size);
       }
       var tilts = stable_tilt_history.concat(tilt_history);
@@ -1249,9 +1286,12 @@ var weblinger = {};
         } else if(weblinger._config.mode == 'joystick') {
           var start_bank = offset.bank || bank;
           var start_attitude = offset.attitude || attitude;
-          var vertscale = (weblinger._config.speed || 1) * (window.innerWidth / 250) * tilt_scale(start_bank - bank, 2.0 * tilt_factor);
-          var horizscale = (weblinger._config.speed || 1) * (window.innerHeight / 75) * tilt_scale(start_attitude - attitude, 1.0 * tilt_factor);
-          console.log("TILT", vertscale, horizscale);
+          var tilt = tilt_scale(start_bank - bank, 2.5 * tilt_factor);
+          var vertscale = (tilt >= 1 || tilt <= -1) ? (weblinger._config.speed || 1) * (window.innerWidth / 250) * tilt : 0;
+          // console.log(Math.round(tilt * 10) / 10);
+          tilt = tilt_scale(start_attitude - attitude, 1.0 * tilt_factor)
+          var horizscale = (tilt >= 1 || tilt <= -1) ? (weblinger._config.speed || 1) * (window.innerHeight / 75) * tilt : 0;
+          // console.log("TILT", vertscale, horizscale);
           if(weblinger.joystick_x == null) {
             weblinger.joystick_x = (window.innerWidth / 2);
           }
@@ -1285,7 +1325,6 @@ var weblinger = {};
       done();
     } else if(weblinger._state.weboji_paused) {
       // initialized but paused
-      debugger
       weblinger._assert_video().then(function(canvas) {        
         weblinger.faceapi.switch_sleep(false);
         weblinger._state.weboji = true;
@@ -1298,8 +1337,22 @@ var weblinger = {};
         debugger
       });
       weblinger._assert_video().then(function(canvas) {        
+        var face_canvas = document.querySelector('#face_canvas');
+        if(!face_canvas) {
+          face_canvas = document.createElement('canvas');
+          face_canvas.id = 'face_canvas';
+          face_canvas.width = 640;
+          face_canvas.height = 480;
+          face_canvas.style.width = '640px'; 
+          face_canvas.style.height = '480px'; 
+          face_canvas.style.border = '1px solid #000'; 
+          face_canvas.style.position = 'absolute'; 
+          face_canvas.style.left = '-1000px';
+          document.body.appendChild(face_canvas);
+        }
+
         weblinger.faceapi.init({
-          canvasId: 'face_canvas',
+          canvasId: face_canvas.id,
           videoSettings: {
             videoElement: canvas
           },
