@@ -110,8 +110,8 @@ its own preferred parameters. If you do provide this, the
 resolution must be high enough to be processable 
 by the supporting libraries (at least 640x480).
 
-***Return Value***  - returns a Promise when fully initialized,
-calibrated and running
+***Return Value***  - returns a Promise which resolves 
+when fully initialized, calibrated and running
 
 ### weblinger.stop
 Stops the tracking. Note that trackers are typically not 
@@ -121,7 +121,8 @@ instead paused.
 **teardown** - set to true to completely tear down all trackers.
 Otherwise it will just pause.
 
-***Return Value***  - returns a Promise when fully stoppeed/paused
+***Return Value***  - returns a Promise which resolves
+when fully stopped/paused
 
 ### Gotchas
 Trackers leverage getUserMedia to track and analyze the
