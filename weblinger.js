@@ -70,6 +70,15 @@ var weblinger = {};
         }  
         resolve();
       };
+      var halted = function() {
+        overlay(null);
+        for(var id in listeners) {
+          listeners[id]({
+            type: 'fail'
+          });
+        }
+        weblinger.stop({teardown: true});
+      };
       var ready_for_calibration = function() {
         if(weblinger._config.calibration instanceof Function) {
           weblinger._config.calibration(weblinger._config).then(function() {
@@ -82,6 +91,8 @@ var weblinger = {};
         } else {
           weblinger.calibrate().then(function() {
             fully_started();
+          }, function(err) {
+            halted();
           });
         }
       };
@@ -97,8 +108,15 @@ var weblinger = {};
       if(weblinger._config.source == 'gaze') {
         weblinger.state.tracking = 'gaze';
         var check_for_gazer = function() {
+          check_for_gazer.attempts = (check_for_gazer.attempts || 0) + 1;
           if(window.webgazer) {
-            start_webgazer(ready_for_calibration);
+            start_webgazer().then(function() {
+              ready_for_calibration();
+            }, function(err) {
+              halted();
+            });
+          } else if(check_for_gazer.attempts > 300) {
+            halted();
           } else {
             setTimeout(check_for_gazer, 100);
           }
@@ -122,12 +140,21 @@ var weblinger = {};
 
       if(load_head) {
         var check_for_weboji = function() {
+          check_for_weboji.attempts = (check_for_weboji.attempts || 0) + 1;
           if(window.JEEFACETRANSFERAPI && window.JEEFACETRANSFERAPINNC) {
-            start_weboji(function() {
+            start_weboji().then(function() {
               if(weblinger._config.source == 'head') {
                 ready_for_calibration();
               }
+            }, function(err) {
+              if(weblinger._config.source == 'head') {
+                halted();
+              } else {
+                // TODO: some kind of note that expressions won't work
+              }
             });
+          } else if(check_for_weboji.attempts > 300) {
+            halted();
           } else {
             setTimeout(check_for_weboji, 100);
           }
@@ -261,6 +288,8 @@ var weblinger = {};
       weblinger.state.status = 'stopped';
       weblinger.state.tracking = null;
       weblinger.state.active = false;
+      weblinger.state.calibrating = false;
+      overlay(null);
       if(opts.callback_id) {
         if(listeners[opts.callback_id]) {
           listeners[opts.callback_id]({type: 'stop'});
@@ -605,6 +634,7 @@ var weblinger = {};
       var canvas = weblinger._assert_video.canvas;
       if(!canvas) {
         canvas = document.createElement('canvas');
+        canvas.id = 'weblinger_render_canvas';
         canvas.style.width = '300px';
         canvas.style.height = '225px';
         canvas.style.position = 'absolute';
@@ -668,6 +698,11 @@ var weblinger = {};
     var promise = new Promise(function(resolve, reject) {
       if(weblinger._assert_video.content.canvas) {
         return resolve(weblinger._assert_video.content.canvas);
+      } else if(weblinger._config.canvas) {
+        weblinger._assert_video.content = {
+          canvas: weblinger._config.canvas
+        };
+        return resolve(weblinger._assert_video.content.canvas);
       }
       weblinger._assert_video.content.stream = null;
       
@@ -718,14 +753,36 @@ var weblinger = {};
       weblinger.state.calibrating = true;
       weblinger.state.status = 'calibrating';
       var calibration_ready = function() {
+        calib.style.opacity = 0.0;
+        calib.active = false;
         setTimeout(function() {
           weblinger._calibrate_element.style.display = 'none';
         }, 2000);
         weblinger._cursor_element.style.display = '';
         delete weblinger.state.calibrating;
         overlay(null);
-        resolve();
+        if(weblinger.state.calibrating) {
+          resolve();
+        } else {
+          reject({error: 'calibration canceled'});
+        }
       };
+      var calibration_failed = function(err) {
+        calib.style.opacity = 0.0;
+        calib.active = false;
+        delete weblinger.state.calibrating;
+        reject({error: err});
+        if(weblinger._calibrate_element) {
+          weblinger._calibrate_element.style.display = 'none';
+        }
+      }
+      setTimeout(function() {
+        if(calib.active == calib_key && weblinger.state.calibrating) {
+          calibration_failed('calibration timeout');
+        }
+      }, 5 * 60 * 1000);
+
+    
       var centering = 17;
       if(!weblinger._calibrate_element) {
         var calib = document.createElement('div');
@@ -748,7 +805,7 @@ var weblinger = {};
       }
       weblinger._calibrate_element.style.background = 'rgba(50, 105, 168, 0.8)';
       weblinger._calibrate_element.style.left = 'calc(50vw - ' + centering + 'px)';
-      weblinger._calibrate_element.style.top = 'calc(50vh - ' + centering + 'px)';
+      weblinger._calibrate_element.style.top = 'calc(' + (weblinger._config.source == 'gaze' ? '55' : '50') + 'vh - ' + centering + 'px)';
       weblinger._calibrate_element.style.display = 'block';
       weblinger._calibrate_element.style.opacity = 1.0;
       weblinger._cursor_element.style.display = 'none';
@@ -766,8 +823,13 @@ var weblinger = {};
       var expressions = [];
       calib.confidence_level = 1;
       calib.gaze_increments = 0;
+      calib.gaze_pulses = 0;
       var throb = function() {
-        if(calib.active) {
+        var now = (new Date()).getTime();
+        if(!weblinger.state.calibrating) {
+          calib.style.display = 'none';
+        }
+        if(calib.active == calib_key) {
           var size = weblinger._config.source == 'gaze' ? 30 : 70;
           var conf_size = size / (1.0 + ((calib.confidence_level - 1) / 2));
           if(weblinger._config.source != 'gaze') {
@@ -775,6 +837,13 @@ var weblinger = {};
             weblinger._calibrate_element.style.top = 'calc(50vh - ' + (conf_size / 2 + 2) + 'px)';  
           }
           if(calib.in || calib.moving) {
+            if(calib.in) {
+              if(weblinger._last_linger && now - weblinger._last_linger.timestamp < 500) {
+                setTimeout(function() {
+                  calib.gaze_pulses++;
+                }, 300);
+              }
+            }
             calib.in = false;
             calib.style.width = conf_size + 'px';
             calib.style.marginLeft = '0';
@@ -791,22 +860,29 @@ var weblinger = {};
         }
       };
       setTimeout(throb, 200);
+      var first_calibration_fail = null;
       var check_position = function() {
         var now = (new Date()).getTime();
         calib.last_move = calib.last_move || now;
+        if(!weblinger.state.calibrating || (first_calibration_fail || now) < now - (30 * 1000)) {
+          calibration_failed('canceled');
+        }
         if(calib.active == calib_key) {
           if(weblinger._config.source == 'gaze') {
             // Check location of the bouncing ball,
             // and use it to train the gaze model
+            var worth_recording = true;
             if(weblinger._last_linger && weblinger._last_linger.source == 'gaze') {
               var now = (new Date()).getTime();
               if(now - weblinger._last_linger.timestamp < 500) {
                 calib.style.background = 'rgba(50, 105, 168, 0.8)';
                 if(!calib.moving) {
                   calib.gaze_increments++;
-                  console.log(calib.gaze_increments);  
                 }
+                first_calibration_fail = null;
               } else {
+                worth_recording = false;
+                first_calibration_fail = first_calibration_fail || now;
                 calib.style.background = 'rgba(168, 50, 50, 0.8)';
               }
             }
@@ -817,15 +893,19 @@ var weblinger = {};
               ctr = 0;
               if(calib.last_move < now - 50) {
                 calib.last_move = now;
-                webgazer.recordScreenPosition(x, y, 'move');
-                log("calib move", bounds.left, bounds.top);                
+                if(worth_recording) {
+                  webgazer.recordScreenPosition(x, y, 'move');
+                  log("calib move", bounds.left, bounds.top);                
+                }
               }
             } else {
               ctr++;
               if(ctr > 30) {
                 ctr = 0;
-                webgazer.recordScreenPosition(x, y, 'click');
-                log("calib click", bounds.left, bounds.top);
+                if(worth_recording) {
+                  webgazer.recordScreenPosition(x, y, 'click');
+                  log("calib click", bounds.left, bounds.top);
+                }
               }
             }
           } else if(weblinger._config.source == 'head') {
@@ -856,6 +936,7 @@ var weblinger = {};
                   var now = (new Date()).getTime();
                   var diff = now - ((offsets[offsets.length - 1] || {}).timestamp || 0);
                   if(diff > 1000) {
+                    first_calibration_fail = first_calibration_fail || now;
                     calib.style.background = 'rgba(168, 50, 50, 0.8)';
                   } else if(diff > 500) {
                     calib.style.background = 'rgba(50, 105, 168, 0.8)';
@@ -865,7 +946,7 @@ var weblinger = {};
                   offsets.push(weblinger._last_linger);
                   calib.style.background = 'rgba(168, 152, 50, 0.8)';
                 } else {
-                  // TODO: shrink slightly with each progression
+                  firstt_calibration_fail = null;
                   offsets.push(weblinger._last_linger);
                   if(offsets.length > 2) {
                     calib.style.background = 'rgba(83, 168, 50, 0.8)';                    
@@ -875,6 +956,7 @@ var weblinger = {};
                   }  
                 }
               } else {
+                first_calibration_fail = first_calibration_fail || now;
                 calib.style.background = 'rgba(168, 50, 50, 0.8)';
                 offsets = offsets.slice(-1);
               }
@@ -895,7 +977,7 @@ var weblinger = {};
       if(weblinger._config.source == 'gaze') {
         overlay("Follow the Dot with Your Eyes");
         var sequence = [
-          {time: 3000, left: 50, top: 50, increments: 80},
+          {time: 3000, left: 50, top: 55, pulses: 3},
           {left: 5, top: 5},
           {left: 50, top: 5},
           {left: 95, top: 5},
@@ -905,16 +987,14 @@ var weblinger = {};
           {left: 50, top: 95},
           {left: 95, top: 95}
         ];
-        var incr = 10;
+        var pulses = 0;
         var sequence_index = 0;
         var check_gaze_increments = function() {
-          if(calib.active != calib_key) { return}
-          if(calib.gaze_increments > incr) {
+          if(calib.active != calib_key || !weblinger.state.calibrating) { return}
+          if(calib.gaze_pulses > pulses) {
             var seq = sequence[sequence_index];
             if(!seq) {
               // done!
-              calib.style.opacity = 0.0;
-              calib.active = false;
               calibration_ready();
               return;
             }
@@ -922,10 +1002,10 @@ var weblinger = {};
               calib.moving = true;
               setTimeout(function() { calib.moving = false; }, 2000);  
             }
-            calib.style.left = 'calc(' + seq.left + 'vw - ' + centering + 'px)';
-            calib.style.top = 'calc(' + seq.top + 'vh - ' + centering + 'px)';
+            calib.style.left = 'calc(' + seq.left + '% - ' + centering + 'px)';
+            calib.style.top = 'calc(' + seq.top + '% - ' + centering + 'px)';
 
-            incr = incr + (seq.increments || 135);
+            pulses = pulses + (seq.pulses || 3);
             sequence_index++;
           }
           var seq = sequence[sequence_index];
@@ -937,6 +1017,7 @@ var weblinger = {};
         overlay("Look Here!");
         var drops =  0;
         var check_offsets = function() {
+          if(calib.active != calib_key || !weblinger.state.calibrating) { return}
           if(offsets.length < 12) {
             setTimeout(check_offsets, 200);
           } else {
@@ -978,6 +1059,7 @@ var weblinger = {};
           }
         };
         var offsets_ready = function() {
+          if(calib.active != calib_key || !weblinger.state.calibrating) { return}
           var groups = [];
           expressions.forEach(function(expr) {
             expr.forEach(function(val, idx) {
@@ -1004,8 +1086,6 @@ var weblinger = {};
           if(isNaN(avg_x)) { debugger }
           if(offsets.length == 0) { debugger }
           weblinger.faceapi.tilt_offset = {x: (avg_x / offsets.length) - (window.innerWidth / 2), y: (avg_y / offsets.length) - (window.innerHeight / 2), points: offsets, bank: (avg_bank / tilts.length), attitude: (avg_attitude / tilts.length)};
-          calib.style.opacity = 0.0;
-          calib.active = false;
           calibration_ready();
         };
         setTimeout(check_offsets, 1000);
@@ -1013,63 +1093,67 @@ var weblinger = {};
     });
   };
 
-  var start_webgazer = function(done) {
-    window.applyKalmanFilter = true;
-    window.saveDataAcrossSessions = false;
-    window.webgazer.showVideo(false);
-    window.webgazer.showPredictionPoints(false);
-    window.webgazer.showFaceFeedbackBox(false);
-    window.webgazer.showFaceOverlay(false);
-    window.webgazer.clearData();
-    window.webgazer.removeMouseEventListeners();
-    var check_for_gazer_in_dom = function() {
-      var dot = document.querySelector('#webgazerGazeDot');
-      if(dot) {
-        window.webgazer.showVideo(false);
-        window.webgazer.showPredictionPoints(false);
-        window.webgazer.showFaceFeedbackBox(false);
-        window.webgazer.showFaceOverlay(false);
-        window.webgazer.removeMouseEventListeners();    
-        window.webgazer.clearData();
-        done();
+  var start_webgazer = function() {
+    return new Promise(function(resolve, reject) {
+      window.applyKalmanFilter = true;
+      window.saveDataAcrossSessions = false;
+      window.webgazer.showVideo(false);
+      window.webgazer.showPredictionPoints(false);
+      window.webgazer.showFaceFeedbackBox(false);
+      window.webgazer.showFaceOverlay(false);
+      window.webgazer.clearData();
+      window.webgazer.removeMouseEventListeners();
+      var check_for_gazer_in_dom = function() {
+        var dot = document.querySelector('#webgazerGazeDot');
+        if(dot) {
+          window.webgazer.showVideo(false);
+          window.webgazer.showPredictionPoints(false);
+          window.webgazer.showFaceFeedbackBox(false);
+          window.webgazer.showFaceOverlay(false);
+          window.webgazer.removeMouseEventListeners();    
+          window.webgazer.clearData();
+          resolve();
+        } else {
+          setTimeout(check_for_gazer_in_dom, 100);
+        }
+      };
+      if(weblinger._state.gazer) {
+        resolve();
+        // already running
+      } else if(weblinger._state.gazer_paused) {
+        // already initialized, but paused
+        weblinger._assert_video().then(function(canvas) {        
+          window.webgazer.setVideoElementCanvas(canvas);
+          window.webgazer.resume();
+          resolve();
+        }, function(err) {
+          reject(err);
+        });
       } else {
+        weblinger._assert_video().then(function(canvas) {        
+          window.webgazer.setVideoElementCanvas(canvas);
+          window.webgazer.setGazeListener(function(data, ms) {
+            if(data == null) { return; }
+            gaze_history = (gaze_history || []).slice(-5);
+            gaze_history.push([data.x, data.y]);
+            var avg_x = 0, avg_y = 0;
+            gaze_history.forEach(function(gaze) {
+              avg_x = avg_x + gaze[0];
+              avg_y = avg_y + gaze[1];
+            })
+            avg_x = avg_x / gaze_history.length;
+            avg_y = avg_y / gaze_history.length;
+            weblinger._notify_linger(avg_x, avg_y, 'gaze');
+          });
+          window.webgazer.begin(null, canvas);  
+        }, function(err) {
+          reject(err);
+        });
         setTimeout(check_for_gazer_in_dom, 100);
       }
-    };
-    if(weblinger._state.gazer) {
-      done();
-      // already running
-    } else if(weblinger._state.gazer_paused) {
-      // already initialized, but paused
-      weblinger._assert_video().then(function(canvas) {        
-        window.webgazer.setVideoElementCanvas(canvas);
-        window.webgazer.resume();
-        done();
-      });
-    } else {
-      weblinger._assert_video().then(function(canvas) {        
-        window.webgazer.setVideoElementCanvas(canvas);
-        window.webgazer.setGazeListener(function(data, ms) {
-          if(data == null) { return; }
-          gaze_history = (gaze_history || []).slice(-5);
-          gaze_history.push([data.x, data.y]);
-          var avg_x = 0, avg_y = 0;
-          gaze_history.forEach(function(gaze) {
-            avg_x = avg_x + gaze[0];
-            avg_y = avg_y + gaze[1];
-          })
-          avg_x = avg_x / gaze_history.length;
-          avg_y = avg_y / gaze_history.length;
-          weblinger._notify_linger(avg_x, avg_y, 'gaze');
-        });
-        window.webgazer.begin(null, canvas);  
-      }, function(err) {
-        // TODO: handle error getting video
-      });
-    }
-    weblinger._state.gazer = true;
-    weblinger._state.gazer_paused = false;
-    setTimeout(check_for_gazer_in_dom, 100);
+      weblinger._state.gazer = true;
+      weblinger._state.gazer_paused = false;
+    });
   };
 
   var l9 = 0.45, l8 = 0.4, l7 = 0.35, l6 = 0.3, l5 = 0.25, l4 = 0.2, l3 = 0.15, l2 = 0.10, l1 = 0.05;
@@ -1306,77 +1390,71 @@ var weblinger = {};
     }
   };
 
-  var start_weboji = function(done) {
-    weblinger.faceapi = window.JEEFACETRANSFERAPI;
-    weblinger.faceapi.set_size(640, 480);
-    weblinger.faceapi.switch_displayVideo(false);
-    start_weboji.poll = start_weboji.poll || function() {
-      if(start_weboji.poll.timeout) { 
-        clearTimeout(start_weboji.poll.timeout);
-      }
-      poll_weboji();
+  var start_weboji = function() {
+    return new Promise(function(done, reject) {
+      weblinger.faceapi = window.JEEFACETRANSFERAPI;
+      weblinger.faceapi.set_size(640, 480);
+      weblinger.faceapi.switch_displayVideo(false);
+      start_weboji.poll = start_weboji.poll || function() {
+        if(start_weboji.poll.timeout) { 
+          clearTimeout(start_weboji.poll.timeout);
+        }
+        poll_weboji();
+        if(weblinger._state.weboji) {
+          start_weboji.poll.timeout = setTimeout(start_weboji.poll, weblinger._state.weboji ? 50 : 500);
+        }
+      };
       if(weblinger._state.weboji) {
-        start_weboji.poll.timeout = setTimeout(start_weboji.poll, weblinger._state.weboji ? 50 : 500);
-      }
-    };
-    if(weblinger._state.weboji) {
-      // already running
-      start_weboji.poll();
-      done();
-    } else if(weblinger._state.weboji_paused) {
-      // initialized but paused
-      weblinger._assert_video().then(function(canvas) {        
-        weblinger.faceapi.switch_sleep(false);
-        weblinger._state.weboji = true;
-        weblinger._state.weboji_paused = false;
+        // already running
         start_weboji.poll();
         done();
-      });
-    } else {
-      weblinger.faceapi.onContextLost(function()  {
-        debugger
-      });
-      weblinger._assert_video().then(function(canvas) {        
-        var face_canvas = document.querySelector('#face_canvas');
-        if(!face_canvas) {
-          face_canvas = document.createElement('canvas');
-          face_canvas.id = 'face_canvas';
-          face_canvas.width = 640;
-          face_canvas.height = 480;
-          face_canvas.style.width = '640px'; 
-          face_canvas.style.height = '480px'; 
-          face_canvas.style.border = '1px solid #000'; 
-          face_canvas.style.position = 'absolute'; 
-          face_canvas.style.left = '-1000px';
-          document.body.appendChild(face_canvas);
-        }
-
-        weblinger.faceapi.init({
-          canvasId: face_canvas.id,
-          videoSettings: {
-            videoElement: canvas
-          },
-          NNC: window.JEEFACETRANSFERAPINNC,
-          callbackReady: function(code) {
-            if(code) { debugger }
-            weblinger._state.weboji = true;
-            weblinger._state.weboji_paused = false;        
-            start_weboji.poll();
-            done();
-          }
+      } else if(weblinger._state.weboji_paused) {
+        // initialized but paused
+        weblinger._assert_video().then(function(canvas) {        
+          weblinger.faceapi.switch_sleep(false);
+          weblinger._state.weboji = true;
+          weblinger._state.weboji_paused = false;
+          start_weboji.poll();
+          done();
         });
-      }, function(err) {
-        debugger
-      });
-      // canvasId: 'jeefacetransferCanvas',
+      } else {
+        weblinger.faceapi.onContextLost(function()  {
+          debugger
+        });
+        weblinger._assert_video().then(function(canvas) {        
+          var face_canvas = document.querySelector('#face_canvas');
+          if(!face_canvas) {
+            face_canvas = document.createElement('canvas');
+            face_canvas.id = 'face_canvas';
+            face_canvas.width = 640;
+            face_canvas.height = 480;
+            face_canvas.style.width = '640px'; 
+            face_canvas.style.height = '480px'; 
+            face_canvas.style.border = '1px solid #000'; 
+            face_canvas.style.position = 'absolute'; 
+            face_canvas.style.left = '-1000px';
+            document.body.appendChild(face_canvas);
+          }
 
-      // assetsParentPath: './assets/3D/',
-      // NNCPath: './js/dist/',
-  
-      // videoSettings: {
-      //   videoElement: canvas (different than rendering canvas)
-      // },        
-    }
+          weblinger.faceapi.init({
+            canvasId: face_canvas.id,
+            videoSettings: {
+              videoElement: canvas
+            },
+            NNC: window.JEEFACETRANSFERAPINNC,
+            callbackReady: function(code) {
+              if(code) { debugger }
+              weblinger._state.weboji = true;
+              weblinger._state.weboji_paused = false;        
+              start_weboji.poll();
+              done();
+            }
+          });
+        }, function(err) {
+          reject(err);
+        });
+      }
+    });
   };
   var add_script = function(src) {
     var script = document.createElement('script');
@@ -1405,22 +1483,60 @@ var weblinger = {};
       overlay.style.transition = 'opacity 0.5s';
       weblinger._overlay_element = overlay;
       document.body.appendChild(overlay);
+      var box = document.createElement('div');
+      box.style.background = '#fff';
+      box.style.padding = '10px 30px';
+      box.style.letterSpacing = '1px';
+      box.style.width = '300px';
+      box.style.margin = 'auto';
+      box.style.boxShadow = '0 0 20px 30px #fff';
+      box.style.position = 'relative';
+      overlay.appendChild(box);
       var text = document.createElement('div');
-      text.classList.add('text');
-      text.style.background = '#fff';
-      text.style.padding = '10px 30px';
-      text.style.letterSpacing = '1px';
-      text.style.width = '300px';
-      text.style.margin = 'auto';
-      text.style.boxShadow = '0 0 20px 30px #fff';
-      overlay.appendChild(text);
+      text.classList.add('overlay_text');
+      box.appendChild(text);
+      var cancel = document.createElement('a');
+      cancel.href = "#";
+      cancel.style.textDecoration = 'none';
+      cancel.style.position = 'absolute';
+      cancel.style.top = '5px';
+      cancel.style.right = '5px';
+      cancel.style.color = '#888';
+      cancel.innerText = "✖";
+      box.appendChild(cancel);
+      cancel.addEventListener('click', function(e) {
+        e.preventDefault();
+        alert('cancel calibration');
+      });
+      var restart = document.createElement('a');
+      restart.href = "#";
+      restart.style.color = '#aaa';
+      restart.style.textDecoration = 'none';
+      restart.style.position = 'absolute';
+      restart.style.fontSize = '35px';
+      restart.style.top = '35px';
+      restart.style.right = '5px';
+      restart.innerText = "↻";
+      restart.addEventListener('click', function(e) {
+        e.preventDefault();
+        alert('restart calibration');
+      });
+      var preview = document.createElement('div');
+      preview.classList.add('overlay_preview');
+      var canvas = document.createElement('canvas');
+      var num = document.createElement('div');
+      preview.appendChild(canvas);
+      preview.appendChild(num);
+      preview.style.display = 'none';
+      box.appendChild(preview);
+      box.appendChild(restart);
     }
     if(str == "Initializing...") {
-      overlay.querySelector('.text').innerHTML = "<img src=\"" + spinner_uri + "\" style=\"width: 30px; padding-right: 10px; vertical-align: middle;\"/>" + str;
+      overlay.querySelector('.overlay_text').innerHTML = "<img src=\"" + spinner_uri + "\" style=\"width: 30px; padding-right: 10px; vertical-align: middle;\"/>" + str;
     } else if(n) {
-      overlay.querySelector('.text').innerHTML = "<span style='color: #888;'>" + str + "</span><br/><span style='font-size: 30px; font-weight: bold; color: #2b5dad;'>" + n + "</span>";
+      overlay.querySelector('.overlay_text').innerHTML = "<span style='color: #888;'>" + str + "</span><br/><span style='font-size: 30px; font-weight: bold; color: #2b5dad;'>" + n + "</span>";
     } else {
-      overlay.querySelector('.text').innerText = str;
+      overlay.querySelector('.overlay_text').innerText = str;
     }
     var key = Math.random();
     overlay.load_key = key;

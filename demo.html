@@ -203,8 +203,10 @@
                   };
                   requestAnimationFrame(check_video);
                 }
-              } else if(e.type == 'stop') {
+              } else if(e.type == 'stop' || e.type == 'fail') {
                 animating = false;
+                document.querySelector('#active').style.display = 'none';
+                document.querySelector('#inactive').style.display = 'inline';
               } else if(e.type == 'expression') {
                 var confirmed_action = e.expression;
                 var lookups = {
