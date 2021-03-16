@@ -759,13 +759,13 @@ var weblinger = {};
           weblinger._calibrate_element.style.display = 'none';
         }, 2000);
         weblinger._cursor_element.style.display = '';
-        delete weblinger.state.calibrating;
         overlay(null);
         if(weblinger.state.calibrating) {
           resolve();
         } else {
           reject({error: 'calibration canceled'});
         }
+        delete weblinger.state.calibrating;
       };
       var calibration_failed = function(err) {
         calib.style.opacity = 0.0;
@@ -1517,6 +1517,7 @@ var weblinger = {};
       restart.style.top = '35px';
       restart.style.right = '5px';
       restart.innerText = "↻";
+      restart.style.display = 'none';
       restart.addEventListener('click', function(e) {
         e.preventDefault();
         alert('restart calibration');
