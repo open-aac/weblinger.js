@@ -19,7 +19,7 @@ weblinger.start({
   mode: 'pointer', // pointer, joystick
   cursor: 'red_circle', // red_circle, dot, image_url
   selection_type: 'linger', // linger, expression, [keycodes], none
-  selection_action: 'click', // click, callback function
+  selection_action: 'click', // click, callback function, none
   linger_duration: 1000, // ms
   linger_type: 'auto', // auto, maintain, rest
   target: 'tabbable', // tabbable, [elements], callback function
@@ -50,11 +50,12 @@ amount (`joystick`)
 on the page. Possible values are `linger` (required the
 cursor staying on the target for `linger_duration`), 
 `expression` (see `selection_expressions`), `none`,
-or an array of keyCodes that can trigger selection.
+or an array of keyCodes (numerical or from 
+[this list](https://developer.mozilla.org/en-US/docs/Web/API/KeyboardEvent/code/code_values) that can trigger selection.
 
 **selection_action** - Action to perform  when selection
 is complete. Can either be `click` or a custom callback
-(not fully implemented)
+(not fully implemented), or `none`
 
 **linger_type** - Specifies whether the cursor must
 continue moving on the target for the entire `linger_duration`
@@ -79,7 +80,7 @@ by setting a value that starts with a period, eg. `.hover`
 updates on weblinger events. Most of these events can
 be intercepted via the DOM if you prefer that approach,
 but this data is a little more fine-grained. The first
-argument will have a `type`, check out demo.html for
+argument will have a `type`, see below for
 examples of use (including getting the video or canvas
 element for rendering in the UI)
 
@@ -110,6 +111,13 @@ its own preferred parameters. If you do provide this, the
 resolution must be high enough to be processable 
 by the supporting libraries (at least 640x480).
 
+**canvas** - An (optional) Canvas element that you will
+update manually. This can be used instead of passing in
+a `stream` object or the default `getUserMedia` approach.
+If you do provide this, the
+resolution must be high enough to be processable 
+by the supporting libraries (at least 640x480).
+
 ***Return Value***  - returns a Promise which resolves 
 when fully initialized, calibrated and running
 
@@ -123,6 +131,94 @@ Otherwise it will just pause.
 
 ***Return Value***  - returns a Promise which resolves
 when fully stopped/paused
+
+### DOM Events
+Native DOM events will be triggered on DOM elements, and you
+can use `addEventListener` to listen for these just like on
+any other DOM events. These events will be triggered even if
+custom action callbacks are defined, or actions are set to `none`.
+
+**linger** - triggered on any selectable element when eye gaze or the visual cursor hovers over the element.
+
+**expression** - triggered if `selection_type=expression` and
+one of the expressions defined in `selection_expressions` is
+detected.
+
+**keyselect** - triggered if `selection_type` is set to a
+list of codes, and one of those keys is hit by the user.
+
+**dwell** - triggered if `selection_type=dwell` and the user
+hovers over a sectable element for at least `linger_duration`
+milliseconds.
+
+### Event Callbacks
+If `event_callback` is defined, then it will be called
+repeatedly while the session is active. Every callback
+will receive one argument, an Object with various attributes
+as defined below.
+
+**event.type** - type of event, possible values are
+`start`, `stop`, `fail`, `linger`, 
+`select`, `ready`, `expression`.
+
+**event.source_video** - for event type `ready` this is the
+Video DOM element tied to the current session. Note that
+depending on how you initiate the session (i.e. if you
+pass in a canvas of your own), this may be null.
+
+**event.source_canvas** - for event type `ready` this is
+the Canvas DOM element which either you or the library
+will be updating for tracking purposes.
+
+**event.x** - equivalent of event.clientX, distance from
+the left edge of the viewport (scroll position is not
+factored in). You can use 
+`document.elementFromPoint` to retrieve the element at
+this point.
+
+**event.y** - equivalent of event.clientY, distance from
+the top edge of the viewport.
+
+**event.target** - DOM element over which the current
+interaction (`linger` or `select`) is occurring.
+
+**event.expression** - for event type `expression` this
+will be any recognized expression type, even if not
+included in `selection_expressions`.
+
+**event.trigger** - for event types `linger` or `select` this
+value will be the type of interaction that triggered
+the event. Possible values are: 
+`cursor`, `gaze`, `head`, `expression`, `keyselect`, 
+`dwell`.
+
+**event.extras.tilt_x** - when `weblinger._config.mode=joystick`
+this will be a scaled value representing the amount of 
+horizontal tilt
+measured by the tracking library. Left of center is negative,
+right of center is positive.
+
+**event.extras.tilt_y** - when `weblinger._config.mode=joystick`
+this will be a scaled value representing the amount of 
+vertical tilt
+measured by the tracking library. Above center is negative,
+below center is positive.
+
+**event.extras.sub_trigger** - for event type `select` this
+is a more fine-grained description of what triggered
+the selection.
+
+**event.extras.last_linger_x** - for event type `expression`
+this is a helper attribute with information about the
+last recorded linger even.
+
+**event.extras.last_linger_y** - for event type `expression`
+this is a helper attribute with information about the
+last recorded linger even.
+
+**event.extras.last_linger_target** - for event type `expression`
+this is a helper attribute with information about the
+last recorded linger even.
 
 ### Gotchas
 Trackers leverage getUserMedia to track and analyze the

@@ -62,9 +62,11 @@ var weblinger = {};
         weblinger.state.status = 'ready';
         weblinger._state.active = true;
         var video = (weblinger._assert_video.content || {}).video;
+        var canvas = (weblinger._assert_video.content || {}).canvas;
         for(var id in listeners) {
           listeners[id]({
             type: 'ready',
+            soure_canvas: canvas,
             source_video: video
           });
         }  
@@ -308,7 +310,8 @@ var weblinger = {};
     }); 
   };
   document.addEventListener('keydown', function(e) {
-    if(((weblinger._config.selection_type || {}).keycodes || []).indexOf(e.keyCode) != -1)  {
+    var codes = ((weblinger._config.selection_type || {}).keycodes || []);
+    if(codes.indexOf(e.keyCode) != -1 || codes.indexOf(e.code) != -1)  {
       e.preventDefault();
       weblinger._notify_select('keyselect', {trigger: 'keydown'});
     }
@@ -342,6 +345,7 @@ var weblinger = {};
     weblinger._cursor_element.style.top = Math.round(Math.min(window.innerHeight - cursor_width, Math.max(0 - cursor_width + 5, clientY - (weblinger._config.cursor_offset_y || 0)))) + "px";
     var target = targets.target;
     var raw_elem = targets.element || document.body;
+    if(target) { weblinger._last_linger.target = target; }
 
     // Check if we've been dwelling on the same dwell target
     // and linger selection type
@@ -590,8 +594,12 @@ var weblinger = {};
         clientY: clientY
       }, settings || {});
       if(!weblinger.state.calibrating && weblinger._state.active) {
+        var extras = {};
+        if(settings && settings.trigger) {
+          extras.sub_trigger = settings.trigger;
+        }
         for(var id in listeners) {
-          listeners[id]({type: 'select', trigger: type, x: clientX, y: clientY, target: target});
+          listeners[id]({type: 'select', trigger: type, x: clientX, y: clientY, target: target, extras: extras});
         }
         if(window.CustomEvent) {
           var event = new CustomEvent(type, event_settings);
@@ -1280,8 +1288,6 @@ var weblinger = {};
         expr_history = [];
         log("ACTION", confirmed_action);
         if(weblinger._config.selection_type == 'expression') {
-          // TODO: if the action is wink and we get blink,
-          // or action is smirk and we get smile, prolly go with it
           var matched = (weblinger._config.selection_expressions || []).indexOf(confirmed_action) != -1;
           if(confirmed_action == 'smile' && (weblinger._config.selection_expressions || []).indexOf('smirk') != -1) {
             matched = true;
@@ -1294,6 +1300,12 @@ var weblinger = {};
           }
         }
         if(!weblinger.state.calibrating && weblinger._state.active) {
+          var extras = {};
+          if(weblinger._last_linger) {
+            extras.last_linger_x = weblinger._last_linger.x;
+            extras.last_linger_y = weblinger._last_linger.y;
+            extras.last_linger_target = weblinger._last_linger.target;
+          }
           for(var id in listeners) {
             listeners[id]({type: 'expression', expression: confirmed_action});
           }
