@@ -1,3 +1,8 @@
+// Copyright 2020 CoughDrop, Inc.
+// Permission is hereby granted, free of charge, to any person obtaining a copy of this software and associated documentation files (the "Software"), to deal in the Software without restriction, including without limitation the rights to use, copy, modify, merge, publish, distribute, sublicense, and/or sell copies of the Software, and to permit persons to whom the Software is furnished to do so, subject to the following conditions:
+// The above copyright notice and this permission notice shall be included in all copies or substantial portions of the Software.
+// THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+
 // TODO: 
 // - Fix cursor mode
 // - UI for choosing cursor image
@@ -37,8 +42,15 @@ var weblinger = {};
   };
   var listeners = {};
   weblinger.start = function(opts) {
-    if(opts.source != 'cursor') {
+    // TODO: add timeouts in case things get stuck unexpectedly
+    // (initializing, calibrating, etc.)
+    weblinger.calibrate.halted = false;
+    if(opts.source != 'cursor' && opts.source != 'arrows') {
       overlay("Initializing...");
+      weblinger.calibrate.stop = function() {
+        weblinger.calibrate.halted = true;
+        overlay(null);
+      };
     }
     weblinger.state.status = 'initializing';
     
@@ -82,7 +94,9 @@ var weblinger = {};
         weblinger.stop({teardown: true});
       };
       var ready_for_calibration = function() {
-        if(weblinger._config.calibration instanceof Function) {
+        if(weblinger.calibrate.halted) {
+          halted();
+        } else if(weblinger._config.calibration instanceof Function) {
           weblinger._config.calibration(weblinger._config).then(function() {
             fully_started();
           }, function(err) {
@@ -131,6 +145,11 @@ var weblinger = {};
         }
       } else if(weblinger._config.source == 'cursor') {
         weblinger.state.tracking = 'cursor';
+        overlay(null);
+        fully_started();
+        // not much to set up or calibrate
+      } else if(weblinger._config.source == 'arrows') {
+        weblinger.state.tracking = 'arrows';
         overlay(null);
         fully_started();
         // not much to set up or calibrate
@@ -346,7 +365,14 @@ var weblinger = {};
     var target = targets.target;
     var raw_elem = targets.element || document.body;
     if(target) { weblinger._last_linger.target = target; }
-
+    weblinger._cursor_element.style.display = 'block';
+    var this_linger = weblinger._last_linger;
+    setTimeout(function() {
+      if(weblinger._last_linger == this_linger) {
+        weblinger._cursor_element.style.display = 'none';
+      }
+    }, 5000);
+    
     // Check if we've been dwelling on the same dwell target
     // and linger selection type
     if(weblinger._config.selection_type == 'linger') {
@@ -474,6 +500,8 @@ var weblinger = {};
                 hide_progress(true);               
               }
             }, weblinger._config.linger_duration - (now - target.dwell_started));
+            // TODO: don't start tracking the dwell in this case until
+            // the cursor speed slows or stops
           }  
         }
       }
@@ -736,10 +764,49 @@ var weblinger = {};
 
   weblinger.calibrate = function() {
     return new Promise(function(resolve, reject) {
-      var sec = 4;
+      var drawing = true;
+      var draw = function() {
+        if(!drawing) { return; }
+        var canvas = weblinger._overlay_element.querySelector('canvas');
+        var context = canvas.getContext('2d');
+        var vid_canvas = weblinger._assert_video && weblinger._assert_video.content && weblinger._assert_video.content.canvas;
+        if(vid_canvas) {
+          if(canvas.width != vid_canvas.width || canvas.height != vid_canvas.height) {
+            canvas.width = vid_canvas.width;
+            canvas.height = vid_canvas.height;
+            var width = canvas.width, max_width = 240;
+            var height = canvas.height, max_height = 200;
+            if(width > max_width) {
+              width = max_width;
+              height = (canvas.height / canvas.width) * width;
+            }
+            if(height > max_height) {
+              height = max_height;
+              width = (canvas.width / canvas.height)  * height;
+            }
+            canvas.style.width = width + 'px';
+            canvas.style.height = height +  'px';
+          }
+          context.drawImage(vid_canvas, 0, 0, canvas.width, canvas.height);
+        }
+        window.requestAnimationFrame(draw);
+      }
+      draw();
+
+      weblinger.calibrate.stop = function() {
+        overlay(null);
+        sec = -1;
+        drawing = false;
+        reject({error: 'manually stopped'});
+      };
+      var sec = 5;
       var next_sec = function() {
         sec--;
-        if(sec == 0) {
+        if(sec < -1) {
+          drawing = false;
+          return;
+        } else if(sec == 0) {
+          drawing = false;
           weblinger.calibrate_without_countdown().then(function(res) {
             resolve(res);
           }, function(err) {
@@ -755,12 +822,13 @@ var weblinger = {};
   };
   weblinger.calibrate_without_countdown = function() {
     return new Promise(function(resolve, reject) {
-      if(weblinger._config.source == 'cursor') {
+      if(weblinger._config.source == 'cursor' || weblinger._config.source == 'arrows') {
         return resolve();
       }
       weblinger.state.calibrating = true;
       weblinger.state.status = 'calibrating';
       var calibration_ready = function() {
+        weblinger.calibrate.stop = null;
         calib.style.opacity = 0.0;
         calib.active = false;
         setTimeout(function() {
@@ -776,8 +844,11 @@ var weblinger = {};
         delete weblinger.state.calibrating;
       };
       var calibration_failed = function(err) {
-        calib.style.opacity = 0.0;
-        calib.active = false;
+        weblinger.calibrate.stop = null;
+        if(weblinger._calibrate_element) {
+          weblinger._calibrate_element.style.opacity = 0.0;
+          weblinger._calibrate_element.active = false;
+        }
         delete weblinger.state.calibrating;
         reject({error: err});
         if(weblinger._calibrate_element) {
@@ -789,7 +860,10 @@ var weblinger = {};
           calibration_failed('calibration timeout');
         }
       }, 5 * 60 * 1000);
-
+      weblinger.calibrate.stop = function() {
+        overlay(null);
+        calibration_failed('manually stopped')
+      };
     
       var centering = 17;
       if(!weblinger._calibrate_element) {
@@ -1100,6 +1174,17 @@ var weblinger = {};
       }
     });
   };
+  weblinger._joystick_move = function(horizscale, vertscale, source) {
+    if(weblinger.joystick_x == null) {
+      weblinger.joystick_x = (window.innerWidth / 2);
+    }
+    if(weblinger.joystick_y == null) {
+      weblinger.joystick_y = (window.innerHeight / 2);
+    }
+    weblinger.joystick_x = Math.min(Math.max(0, weblinger.joystick_x + (horizscale * (weblinger._config.speed || 1))), window.innerWidth);
+    weblinger.joystick_y = Math.min(Math.max(0, weblinger.joystick_y + (vertscale * (weblinger._config.speed || 1))), window.innerHeight);
+    weblinger._notify_linger(weblinger.joystick_x, weblinger.joystick_y, source, {tilt_y: vertscale, tilt_x: horizscale});
+  };
 
   var start_webgazer = function() {
     return new Promise(function(resolve, reject) {
@@ -1383,20 +1468,12 @@ var weblinger = {};
           var start_bank = offset.bank || bank;
           var start_attitude = offset.attitude || attitude;
           var tilt = tilt_scale(start_bank - bank, 2.5 * tilt_factor);
-          var vertscale = (tilt >= 1 || tilt <= -1) ? (weblinger._config.speed || 1) * (window.innerWidth / 250) * tilt : 0;
+          var vertscale = (tilt >= 1 || tilt <= -1) ? (window.innerWidth / 250) * tilt : 0;
           // console.log(Math.round(tilt * 10) / 10);
           tilt = tilt_scale(start_attitude - attitude, 1.0 * tilt_factor)
-          var horizscale = (tilt >= 1 || tilt <= -1) ? (weblinger._config.speed || 1) * (window.innerHeight / 75) * tilt : 0;
+          var horizscale = (tilt >= 1 || tilt <= -1) ? (window.innerHeight / 75) * tilt : 0;
           // console.log("TILT", vertscale, horizscale);
-          if(weblinger.joystick_x == null) {
-            weblinger.joystick_x = (window.innerWidth / 2);
-          }
-          if(weblinger.joystick_y == null) {
-            weblinger.joystick_y = (window.innerHeight / 2);
-          }
-          weblinger.joystick_x = Math.min(Math.max(0, weblinger.joystick_x + horizscale), window.innerWidth);
-          weblinger.joystick_y = Math.min(Math.max(0, weblinger.joystick_y + vertscale), window.innerHeight);
-          weblinger._notify_linger(weblinger.joystick_x, weblinger.joystick_y, 'head', {tilt_y: vertscale, tilt_x: horizscale});
+          weblinger._joystick_move(horizscale, vertscale, 'head');
         }
       }
     }
@@ -1481,13 +1558,14 @@ var weblinger = {};
       overlay.id = 'weblinger_overlay';
       overlay.style.position = 'fixed';
       overlay.style.left = 0;
+      overlay.style.display = 'none';
       overlay.style.right = 0;
       overlay.style.top = 0;
       overlay.style.bottom = 0;
       overlay.style.background = 'rgba(255, 255, 255, 0.7)';
       overlay.style.zIndex = 999999;
       overlay.style.opacity = 0.0;
-      overlay.style.paddingTop = 'calc(50vh - 20px - 50px)';
+      overlay.style.paddingTop = 'calc(50vh - 20px - 50px - 50px)';
       overlay.style.fontSize = '25px';
       overlay.style.fontFamily = 'Arial';
       overlay.style.fontWeight = 'bold';
@@ -1518,7 +1596,9 @@ var weblinger = {};
       box.appendChild(cancel);
       cancel.addEventListener('click', function(e) {
         e.preventDefault();
-        alert('cancel calibration');
+        if(weblinger.calibrate.stop) {
+          weblinger.calibrate.stop();
+        }
       });
       var restart = document.createElement('a');
       restart.href = "#";
@@ -1536,8 +1616,19 @@ var weblinger = {};
       });
       var preview = document.createElement('div');
       preview.classList.add('overlay_preview');
+      preview.style.position = 'relative';
       var canvas = document.createElement('canvas');
+      canvas.style.width = '100%';
+      canvas.style.height = '122px';
+      canvas.style.border = '2px solid #888';
+      canvas.style.margin = '0 auto';
+      canvas.style.borderRadius = '5px';
       var num = document.createElement('div');
+      num.style.position = 'absolute';
+      num.style.width = '100%';
+      num.style.top = 'calc(50% - 20px)';
+      num.style.textShadow = '2px 2px 3px #fff, -2px -2px 3px #fff, 2px -2px 3px #fff, -2px 2px 3px #fff';
+      num.classList.add('overlay_num');
       preview.appendChild(canvas);
       preview.appendChild(num);
       preview.style.display = 'none';
@@ -1546,10 +1637,14 @@ var weblinger = {};
     }
     if(str == "Initializing...") {
       overlay.querySelector('.overlay_text').innerHTML = "<img src=\"" + spinner_uri + "\" style=\"width: 30px; padding-right: 10px; vertical-align: middle;\"/>" + str;
+      overlay.querySelector('.overlay_preview').style.display = 'none';
     } else if(n) {
-      overlay.querySelector('.overlay_text').innerHTML = "<span style='color: #888;'>" + str + "</span><br/><span style='font-size: 30px; font-weight: bold; color: #2b5dad;'>" + n + "</span>";
+      overlay.querySelector('.overlay_text').innerHTML = "<span style='color: #888;'>" + str + "</span>";
+      overlay.querySelector('.overlay_num').innerHTML = "<span style='font-size: 40px; font-weight: bold; color: #2b5dad;'>" + n + "</span>";
+      overlay.querySelector('.overlay_preview').style.display = 'block';
     } else {
       overlay.querySelector('.overlay_text').innerText = str;
+      overlay.querySelector('.overlay_preview').style.display = 'none';
     }
     var key = Math.random();
     overlay.load_key = key;
@@ -1567,4 +1662,58 @@ var weblinger = {};
       }, 1000);
     }
   };
+  
+  var key_check = function() {
+    if(!key_check.running) { return; }
+    var vertscale = 0;
+    var horizscale = 0;
+    if(down_keys[37] || down_keys['ArrowLeft']) {
+      if((down_keys[37] || down_keys['ArrowLeft']) > (down_keys[39] || down_keys['ArrowRight'] || 0)) {
+        horizscale = -1;
+      }
+    }
+    if(down_keys[39] || down_keys['ArrowRight']) {
+      if((down_keys[39] || down_keys['ArrowRight']) > (down_keys[37] || down_keys['ArrowLeft'] || 0)) {
+        horizscale = 1;
+      }
+    }
+    if(down_keys[38] || down_keys['ArrowUp']) {
+      if((down_keys[38] || down_keys['ArrowUp']) > (down_keys[40] || down_keys['ArrowDown'] || 0)) {
+        vertscale = -1;
+      }
+    }
+    if(down_keys[40] || down_keys['ArrowDown']) {
+      if((down_keys[40] || down_keys['ArrowDown']) > (down_keys[38] || down_keys['ArrowUp'] || 0)) {
+        vertscale = 1;
+      }      
+    }
+    if(vertscale || horizscale) {
+      if(weblinger._config.source == 'arrows' && weblinger._state.active) {
+        weblinger._joystick_move(horizscale * 10, vertscale * 10, 'arrows');
+      }
+    }
+    setTimeout(key_check, 50);
+  };
+  var down_keys = {};
+  var arrow_keys = [37, 38, 39, 40, 'ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown'];
+  document.addEventListener('keydown', function(e) {
+    if(weblinger._config.source == 'arrows' && weblinger._state.active) {
+      if(arrow_keys.indexOf(e.code || e.keyCode) != -1) {
+        e.preventDefault();
+        down_keys[e.code || e.keyCode] = (new Date()).getTime();
+        if(!key_check.running) {
+          key_check.running = true;
+          key_check();
+        }
+      }
+    }
+  });
+  document.addEventListener('keyup', function(e) {
+    if(arrow_keys.indexOf(e.code || e.keyCode) != -1) {
+      delete down_keys[e.code || e.keyCode];
+      if(Object.keys(down_keys).length == 0) {
+        key_check.running = false;
+      }
+    }
+  });
 })();
